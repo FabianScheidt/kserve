@@ -28,9 +28,10 @@ from kserve import (
     KServeClient,
 )
 from kserve.constants import constants
-from ..common.utils import KSERVE_TEST_NAMESPACE, generate, predict_isvc
+from ..common.utils import KSERVE_TEST_NAMESPACE, generate, embed, predict_isvc
 from .test_output import (
     huggingface_text_embedding_expected_output,
+    huggingface_text_embedding_expected_base64_output,
     huggingface_sequence_classification_with_probabilities_expected_output,
 )
 
@@ -341,6 +342,69 @@ async def test_huggingface_v2_text_embedding(rest_v2_client):
         rest_v2_client, service_name, "./data/text_embedding_input_v2.json"
     )
     assert res.outputs[0].data == huggingface_text_embedding_expected_output
+
+    kserve_client.delete(service_name, KSERVE_TEST_NAMESPACE)
+
+
+@pytest.mark.llm
+@pytest.mark.asyncio(scope="session")
+async def test_huggingface_openai_text_embedding():
+    service_name = "hf-text-embedding-openai"
+    predictor = V1beta1PredictorSpec(
+        min_replicas=1,
+        model=V1beta1ModelSpec(
+            model_format=V1beta1ModelFormat(
+                name="huggingface",
+            ),
+            args=[
+                "--model_id",
+                "sentence-transformers/all-MiniLM-L6-v2",
+                "--model_revision",
+                "8b3219a92973c328a8e22fadcfa821b5dc75636a",
+                "--tokenizer_revision",
+                "8b3219a92973c328a8e22fadcfa821b5dc75636a",
+                "--task",
+                "text_embedding",
+                "--backend",
+                "huggingface",
+            ],
+            resources=V1ResourceRequirements(
+                requests={"cpu": "1", "memory": "2Gi"},
+                limits={"cpu": "1", "memory": "4Gi"},
+            ),
+        ),
+    )
+
+    isvc = V1beta1InferenceService(
+        api_version=constants.KSERVE_V1BETA1,
+        kind=constants.KSERVE_KIND_INFERENCESERVICE,
+        metadata=client.V1ObjectMeta(
+            name=service_name, namespace=KSERVE_TEST_NAMESPACE
+        ),
+        spec=V1beta1InferenceServiceSpec(predictor=predictor),
+    )
+
+    kserve_client = KServeClient(
+        config_file=os.environ.get("KUBECONFIG", "~/.kube/config")
+    )
+    kserve_client.create(isvc)
+    kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
+
+    # Validate float output
+    res = embed(service_name, "./data/text_embedding_input_openai_float.json")
+    assert len(res["data"]) == 1
+    assert res["data"][0]["embedding"] == huggingface_text_embedding_expected_output
+
+    # Validate base64 output
+    res = embed(service_name, "./data/text_embedding_input_openai_base64.json")
+    assert len(res["data"]) == 1
+    assert (
+        res["data"][0]["embedding"] == huggingface_text_embedding_expected_base64_output
+    )
+
+    # Validate Token count
+    assert res["usage"]["prompt_tokens"] == 8
+    assert res["usage"]["total_tokens"] == 8
 
     kserve_client.delete(service_name, KSERVE_TEST_NAMESPACE)
 
